@@ -209,10 +209,13 @@ HTML = """<!DOCTYPE html>
   </div>
   <div class="quality-row" id="qualityRow">
     <div class="quality-btn active" data-q="hq" onclick="setQuality(this)">
-      HQ<span class="format-label">Better image</span>
+      HQ<span class="format-label">Best image</span>
     </div>
     <div class="quality-btn" data-q="light" onclick="setQuality(this)">
-      Light<span class="format-label">Smaller file</span>
+      Light<span class="format-label">Smaller</span>
+    </div>
+    <div class="quality-btn" data-q="vlight" onclick="setQuality(this)">
+      V.Light<span class="format-label">Smallest</span>
     </div>
   </div>
   <button class="btn-convert" id="btn" onclick="convert()">Convert</button>
@@ -508,7 +511,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 "bframes=0:ref=1:annexb=1:no-deblock=1:no-psy=1:no-mbtree=1:"
                 "aq-mode=0:chroma-qp-offset=0:partitions=none:me=dia:subme=0:"
                 "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
-                "-qp", "28" if quality == "hq" else "34", "-g", "1",
+                "-qp", {"hq": "28", "light": "34", "vlight": "38"}.get(quality, "28"), "-g", "1",
                 "-vtag", "H264",
                 "-vf", vf,
                 "-r", "30",
