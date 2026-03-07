@@ -322,6 +322,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 cmd += ["--ffmpeg-location", FFMPEG]
             cmd += [
                 "-x", "--audio-format", "mp3", "--audio-quality", "0",
+                "--embed-thumbnail",
                 "-o", os.path.join(self.download_dir, "%(title)s.%(ext)s"),
                 "--no-playlist",
                 url,
