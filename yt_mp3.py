@@ -460,7 +460,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 "bframes=0:ref=1:annexb=1:no-deblock=1:no-psy=1:no-mbtree=1:"
                 "aq-mode=0:chroma-qp-offset=0:partitions=none:me=dia:subme=0:"
                 "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
-                "-qp", "28", "-g", "1",
+                "-qp", "32", "-g", "1",
                 "-vtag", "H264",
                 "-vf", vf,
                 "-r", "30",
