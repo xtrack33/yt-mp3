@@ -175,7 +175,10 @@ HTML = """<!DOCTYPE html>
       MP3<span class="format-label">Audio only</span>
     </div>
     <div class="format-btn" data-fmt="avi" onclick="setFormat(this)">
-      AVI<span class="format-label">Video 240p</span>
+      AVI<span class="format-label">Fullscreen</span>
+    </div>
+    <div class="format-btn" data-fmt="avi169" onclick="setFormat(this)">
+      AVI 16:9<span class="format-label">Letterbox</span>
     </div>
   </div>
   <button class="btn-convert" id="btn" onclick="convert()">Convert</button>
@@ -360,8 +363,8 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             self.respond({"ok": False, "error": "Invalid YouTube link"})
             return
 
-        if fmt == "avi":
-            self.convert_avi(url)
+        if fmt in ("avi", "avi169"):
+            self.convert_avi(url, letterbox=(fmt == "avi169"))
         else:
             self.convert_mp3(url)
 
@@ -400,7 +403,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.respond({"ok": False, "error": str(e)[:200]})
 
-    def convert_avi(self, url):
+    def convert_avi(self, url, letterbox=False):
         try:
             # Step 1: download with yt-dlp (best quality, temp file)
             tmp_template = os.path.join(self.download_dir, "%(title)s_tmp.%(ext)s")
@@ -441,6 +444,12 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             base_name = os.path.basename(tmp_file).rsplit("_tmp.", 1)[0]
             avi_file = os.path.join(self.download_dir, base_name + ".avi")
 
+            # Video filter: fullscreen or 16:9 letterbox
+            if letterbox:
+                vf = "scale=288:162,transpose=2,pad=240:288:(240-iw)/2:0:black,setsar=1:1"
+            else:
+                vf = "scale=288:240,transpose=2,setsar=1:1"
+
             ffmpeg_bin = FFMPEG or "ffmpeg"
             avi_cmd = [
                 ffmpeg_bin, "-y", "-i", tmp_file,
@@ -453,7 +462,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
                 "-qp", "28", "-g", "1",
                 "-vtag", "H264",
-                "-vf", "scale=288:240,transpose=2,setsar=1:1",
+                "-vf", vf,
                 "-r", "30",
                 "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 avi_file,
