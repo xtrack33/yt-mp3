@@ -1,0 +1,14 @@
+[Unit]
+Description=YT-MP3 Web Downloader
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+ExecStart=/usr/bin/python3 /opt/yt-mp3/yt_mp3.py --host 127.0.0.1 --port 8899 --dir /opt/yt-mp3/downloads
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
