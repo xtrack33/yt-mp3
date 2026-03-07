@@ -92,6 +92,32 @@ HTML = """<!DOCTYPE html>
   .format-btn:hover { border-color: #555; }
   .format-btn.active:hover { border-color: #ff4444; }
   .format-label { font-size: 11px; color: #666; display: block; margin-top: 2px; font-weight: 400; }
+  .quality-row {
+    display: none;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .quality-row.visible { display: flex; }
+  .quality-btn {
+    flex: 1;
+    padding: 8px;
+    border: 2px solid #333;
+    border-radius: 6px;
+    background: #0f0f0f;
+    color: #888;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    transition: all .2s;
+  }
+  .quality-btn.active {
+    border-color: #ff8800;
+    color: #fff;
+    background: #1e1e1e;
+  }
+  .quality-btn:hover { border-color: #555; }
+  .quality-btn.active:hover { border-color: #ff8800; }
   .btn-convert {
     width: 100%;
     margin-top: 16px;
@@ -181,6 +207,14 @@ HTML = """<!DOCTYPE html>
       AVI 16:9<span class="format-label">Letterbox</span>
     </div>
   </div>
+  <div class="quality-row" id="qualityRow">
+    <div class="quality-btn active" data-q="hq" onclick="setQuality(this)">
+      HQ<span class="format-label">Better image</span>
+    </div>
+    <div class="quality-btn" data-q="light" onclick="setQuality(this)">
+      Light<span class="format-label">Smaller file</span>
+    </div>
+  </div>
   <button class="btn-convert" id="btn" onclick="convert()">Convert</button>
   <div id="status"></div>
   <div class="history" id="historyBox" style="display:none">
@@ -195,11 +229,24 @@ const urlInput = document.getElementById('url');
 const historyBox = document.getElementById('historyBox');
 const historyList = document.getElementById('historyList');
 let currentFormat = 'mp3';
+let currentQuality = 'hq';
+const qualityRow = document.getElementById('qualityRow');
 
 function setFormat(el) {
   document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
   el.classList.add('active');
   currentFormat = el.dataset.fmt;
+  if (currentFormat === 'avi' || currentFormat === 'avi169') {
+    qualityRow.classList.add('visible');
+  } else {
+    qualityRow.classList.remove('visible');
+  }
+}
+
+function setQuality(el) {
+  document.querySelectorAll('.quality-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  currentQuality = el.dataset.q;
 }
 
 urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') convert(); });
@@ -215,7 +262,7 @@ async function convert() {
     const res = await fetch('download', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url, format: currentFormat})
+      body: JSON.stringify({url, format: currentFormat, quality: currentQuality})
     });
     const data = await res.json();
     if (data.ok) {
@@ -358,13 +405,14 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length))
         url = body.get("url", "")
         fmt = body.get("format", "mp3")
+        quality = body.get("quality", "hq")
 
         if not re.match(r"https?://(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/", url):
             self.respond({"ok": False, "error": "Invalid YouTube link"})
             return
 
         if fmt in ("avi", "avi169"):
-            self.convert_avi(url, letterbox=(fmt == "avi169"))
+            self.convert_avi(url, letterbox=(fmt == "avi169"), quality=quality)
         else:
             self.convert_mp3(url)
 
@@ -403,7 +451,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.respond({"ok": False, "error": str(e)[:200]})
 
-    def convert_avi(self, url, letterbox=False):
+    def convert_avi(self, url, letterbox=False, quality="hq"):
         try:
             # Step 1: download with yt-dlp (best quality, temp file)
             tmp_template = os.path.join(self.download_dir, "%(title)s_tmp.%(ext)s")
@@ -460,7 +508,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 "bframes=0:ref=1:annexb=1:no-deblock=1:no-psy=1:no-mbtree=1:"
                 "aq-mode=0:chroma-qp-offset=0:partitions=none:me=dia:subme=0:"
                 "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
-                "-qp", "32", "-g", "1",
+                "-qp", "28" if quality == "hq" else "34", "-g", "1",
                 "-vtag", "H264",
                 "-vf", vf,
                 "-r", "30",
