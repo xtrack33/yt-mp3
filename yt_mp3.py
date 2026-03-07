@@ -453,7 +453,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
                 "-qp", "28", "-g", "1",
                 "-vtag", "H264",
-                "-vf", "scale=240:288,setsar=1:1",
+                "-vf", "scale=288:240,transpose=2,setsar=1:1",
                 "-r", "30",
                 "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 avi_file,
