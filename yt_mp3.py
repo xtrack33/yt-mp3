@@ -393,7 +393,9 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             ffmpeg_bin = FFMPEG or "ffmpeg"
             avi_cmd = [
                 ffmpeg_bin, "-y", "-i", tmp_file,
-                "-c:v", "libx264", "-profile:v", "baseline",
+                "-c:v", "libx264", "-profile:v", "baseline", "-level:v", "4.1",
+                "-x264-params", "bframes=0:ref=1:annexb=1",
+                "-vtag", "H264",
                 "-s", "240x288", "-r", "30", "-b:v", "668k",
                 "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 avi_file,
