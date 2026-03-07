@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""YT-MP3 — Minimal web server to download YouTube videos as MP3 via yt-dlp."""
+"""YT-MP3 — Minimal web server to download YouTube videos as MP3 or AVI via yt-dlp."""
 
 import http.server
 import json
@@ -11,6 +11,7 @@ import shutil
 import argparse
 import mimetypes
 import urllib.parse
+import glob
 
 DEFAULT_PORT = 8899
 DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
@@ -65,6 +66,32 @@ HTML = """<!DOCTYPE html>
   }
   input:focus { border-color: #ff4444; }
   input::placeholder { color: #666; }
+  .format-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .format-btn {
+    flex: 1;
+    padding: 10px;
+    border: 2px solid #333;
+    border-radius: 8px;
+    background: #0f0f0f;
+    color: #888;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    transition: all .2s;
+  }
+  .format-btn.active {
+    border-color: #ff4444;
+    color: #fff;
+    background: #1e1e1e;
+  }
+  .format-btn:hover { border-color: #555; }
+  .format-btn.active:hover { border-color: #ff4444; }
+  .format-label { font-size: 11px; color: #666; display: block; margin-top: 2px; font-weight: 400; }
   .btn-convert {
     width: 100%;
     margin-top: 16px;
@@ -143,7 +170,15 @@ HTML = """<!DOCTYPE html>
 <div class="container">
   <h1><span>YT</span>-MP3</h1>
   <input type="text" id="url" placeholder="Paste a YouTube link here..." autofocus>
-  <button class="btn-convert" id="btn" onclick="convert()">Convert to MP3</button>
+  <div class="format-row">
+    <div class="format-btn active" data-fmt="mp3" onclick="setFormat(this)">
+      MP3<span class="format-label">Audio only</span>
+    </div>
+    <div class="format-btn" data-fmt="avi" onclick="setFormat(this)">
+      AVI<span class="format-label">Video 240p</span>
+    </div>
+  </div>
+  <button class="btn-convert" id="btn" onclick="convert()">Convert</button>
   <div id="status"></div>
   <div class="history" id="historyBox" style="display:none">
     <h3>Files</h3>
@@ -156,6 +191,13 @@ const btn = document.getElementById('btn');
 const urlInput = document.getElementById('url');
 const historyBox = document.getElementById('historyBox');
 const historyList = document.getElementById('historyList');
+let currentFormat = 'mp3';
+
+function setFormat(el) {
+  document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  currentFormat = el.dataset.fmt;
+}
 
 urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') convert(); });
 
@@ -164,13 +206,13 @@ async function convert() {
   if (!url) return;
   status.style.display = 'block';
   status.className = 'loading';
-  status.innerHTML = '<span class="spinner"></span> Converting...';
+  status.innerHTML = '<span class="spinner"></span> Converting to ' + currentFormat.toUpperCase() + '...';
   btn.disabled = true;
   try {
     const res = await fetch('download', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url})
+      body: JSON.stringify({url, format: currentFormat})
     });
     const data = await res.json();
     if (data.ok) {
@@ -262,11 +304,18 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length))
         url = body.get("url", "")
+        fmt = body.get("format", "mp3")
 
         if not re.match(r"https?://(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/", url):
             self.respond({"ok": False, "error": "Invalid YouTube link"})
             return
 
+        if fmt == "avi":
+            self.convert_avi(url)
+        else:
+            self.convert_mp3(url)
+
+    def convert_mp3(self, url):
         try:
             cmd = [YTDLP]
             if FFMPEG:
@@ -300,6 +349,74 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.respond({"ok": False, "error": str(e)[:200]})
 
+    def convert_avi(self, url):
+        try:
+            # Step 1: download with yt-dlp (best quality, temp file)
+            tmp_template = os.path.join(self.download_dir, "%(title)s_tmp.%(ext)s")
+            cmd = [YTDLP]
+            if FFMPEG:
+                cmd += ["--ffmpeg-location", FFMPEG]
+            cmd += [
+                "-f", "best[height<=480]/best",
+                "-o", tmp_template,
+                "--no-playlist",
+                url,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                err = result.stderr.strip().split("\n")[-1] if result.stderr else "yt-dlp error"
+                self.respond({"ok": False, "error": err[:200]})
+                return
+
+            # Find the downloaded temp file
+            tmp_file = None
+            for line in result.stdout.splitlines():
+                if "[download] Destination:" in line:
+                    tmp_file = line.split("Destination: ", 1)[1].strip()
+                elif "[download] " in line and " has already been downloaded" in line:
+                    tmp_file = line.split("[download] ", 1)[1].split(" has already")[0].strip()
+                elif "[Merger] Merging formats into" in line:
+                    tmp_file = line.split("Merging formats into \"", 1)[1].rstrip('"').strip()
+            if not tmp_file or not os.path.isfile(tmp_file):
+                # Fallback: find most recent _tmp file
+                candidates = glob.glob(os.path.join(self.download_dir, "*_tmp.*"))
+                if candidates:
+                    tmp_file = max(candidates, key=os.path.getmtime)
+                else:
+                    self.respond({"ok": False, "error": "Download failed"})
+                    return
+
+            # Step 2: convert to AVI with ffmpeg (matching device format)
+            base_name = os.path.basename(tmp_file).rsplit("_tmp.", 1)[0]
+            avi_file = os.path.join(self.download_dir, base_name + ".avi")
+
+            ffmpeg_bin = FFMPEG or "ffmpeg"
+            avi_cmd = [
+                ffmpeg_bin, "-y", "-i", tmp_file,
+                "-c:v", "libx264", "-profile:v", "baseline",
+                "-s", "240x288", "-r", "30", "-b:v", "668k",
+                "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                avi_file,
+            ]
+            conv = subprocess.run(avi_cmd, capture_output=True, text=True, timeout=600)
+
+            # Clean up temp file
+            try:
+                os.remove(tmp_file)
+            except OSError:
+                pass
+
+            if conv.returncode == 0 and os.path.isfile(avi_file):
+                self.respond({"ok": True, "file": os.path.basename(avi_file)})
+            else:
+                err = conv.stderr.strip().split("\n")[-1] if conv.stderr else "ffmpeg error"
+                self.respond({"ok": False, "error": err[:200]})
+
+        except subprocess.TimeoutExpired:
+            self.respond({"ok": False, "error": "Timeout (>10min)"})
+        except Exception as e:
+            self.respond({"ok": False, "error": str(e)[:200]})
+
     def respond(self, data):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -311,7 +428,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="YT-MP3 — YouTube to MP3 downloader")
+    parser = argparse.ArgumentParser(description="YT-MP3 — YouTube to MP3/AVI downloader")
     parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("YTMP3_PORT", DEFAULT_PORT)))
     parser.add_argument("-d", "--dir", default=os.environ.get("YTMP3_DIR", DEFAULT_DIR))
     parser.add_argument("--host", default=os.environ.get("YTMP3_HOST", "127.0.0.1"))
