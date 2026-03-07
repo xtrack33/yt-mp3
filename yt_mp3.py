@@ -239,7 +239,11 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         filesize = os.path.getsize(filepath)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(filesize))
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        # RFC 5987: ASCII fallback + UTF-8 encoded filename
+        ascii_name = filename.encode("ascii", "replace").decode("ascii")
+        utf8_name = urllib.parse.quote(filename)
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_name}')
         self.end_headers()
         with open(filepath, "rb") as f:
             while chunk := f.read(65536):
