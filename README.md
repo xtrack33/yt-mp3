@@ -1,6 +1,9 @@
 # YT-MP3
 
-Minimal self-hosted YouTube to MP3 converter. Paste a link, click, download.
+Minimal self-hosted YouTube to MP3/AVI converter. Paste a link, pick a format, click, download.
+
+- **MP3** — Audio only, best quality, with embedded cover art (YouTube thumbnail)
+- **AVI** — Video 240p, optimized for portable media players (H.264 Baseline + PCM audio)
 
 Files are automatically deleted from the server after download.
 
@@ -19,12 +22,9 @@ Open http://localhost:8899
 ## Install on a server (Debian/Ubuntu)
 
 ```bash
-# Clone the repo
 cd /opt
 git clone https://github.com/xtrack33/yt-mp3.git
 cd yt-mp3
-
-# Run the install script
 chmod +x install.sh
 sudo ./install.sh
 ```
@@ -33,6 +33,7 @@ The install script will:
 - Install `ffmpeg` and `yt-dlp`
 - Create the download directory `/opt/yt-mp3/downloads`
 - Install and start the `yt-mp3` systemd service
+- Configure Apache reverse proxy (if available)
 - The app runs on `http://127.0.0.1:8899`
 
 ### Reverse proxy (Apache)
@@ -59,6 +60,13 @@ location /yt-mp3/ {
 ```
 
 Environment variables: `YTMP3_PORT`, `YTMP3_DIR`, `YTMP3_HOST`
+
+## Uninstall
+
+```bash
+cd /opt/yt-mp3
+sudo ./uninstall.sh
+```
 
 ## Update
 
