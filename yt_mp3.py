@@ -167,7 +167,7 @@ async function convert() {
   status.innerHTML = '<span class="spinner"></span> Conversion en cours...';
   btn.disabled = true;
   try {
-    const res = await fetch('/download', {
+    const res = await fetch('download', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({url})
@@ -199,7 +199,7 @@ function addHistory(filename) {
   name.textContent = filename;
   const dl = document.createElement('a');
   dl.className = 'btn-dl';
-  dl.href = '/files/' + encodeURIComponent(filename);
+  dl.href = 'files/' + encodeURIComponent(filename);
   dl.download = filename;
   dl.textContent = 'Telecharger';
   d.appendChild(name);
