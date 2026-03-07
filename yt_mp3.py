@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""YT-MP3 — Mini serveur web pour télécharger des YouTube en MP3 via yt-dlp."""
+"""YT-MP3 — Minimal web server to download YouTube videos as MP3 via yt-dlp."""
 
 import http.server
 import json
@@ -21,7 +21,7 @@ FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
 
 HTML = """<!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -142,11 +142,11 @@ HTML = """<!DOCTYPE html>
 <body>
 <div class="container">
   <h1><span>YT</span>-MP3</h1>
-  <input type="text" id="url" placeholder="Colle un lien YouTube ici..." autofocus>
-  <button class="btn-convert" id="btn" onclick="convert()">Convertir en MP3</button>
+  <input type="text" id="url" placeholder="Paste a YouTube link here..." autofocus>
+  <button class="btn-convert" id="btn" onclick="convert()">Convert to MP3</button>
   <div id="status"></div>
   <div class="history" id="historyBox" style="display:none">
-    <h3>Fichiers</h3>
+    <h3>Files</h3>
     <div id="historyList"></div>
   </div>
 </div>
@@ -164,7 +164,7 @@ async function convert() {
   if (!url) return;
   status.style.display = 'block';
   status.className = 'loading';
-  status.innerHTML = '<span class="spinner"></span> Conversion en cours...';
+  status.innerHTML = '<span class="spinner"></span> Converting...';
   btn.disabled = true;
   try {
     const res = await fetch('download', {
@@ -184,7 +184,7 @@ async function convert() {
     }
   } catch(e) {
     status.className = 'error';
-    status.textContent = 'Erreur connexion serveur';
+    status.textContent = 'Server connection error';
   }
   btn.disabled = false;
 }
@@ -201,7 +201,7 @@ function addHistory(filename) {
   dl.className = 'btn-dl';
   dl.href = 'files/' + encodeURIComponent(filename);
   dl.download = filename;
-  dl.textContent = 'Telecharger';
+  dl.textContent = 'Download';
   d.appendChild(name);
   d.appendChild(dl);
   historyList.prepend(d);
@@ -228,11 +228,11 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
 
     def serve_file(self):
         filename = urllib.parse.unquote(self.path[7:])  # strip /files/
-        # Sécurité : pas de path traversal
+        # Security: prevent path traversal
         filename = os.path.basename(filename)
         filepath = os.path.join(self.download_dir, filename)
         if not os.path.isfile(filepath):
-            self.send_error(404, "Fichier non trouve")
+            self.send_error(404, "File not found")
             return
         self.send_response(200)
         mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -260,7 +260,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         url = body.get("url", "")
 
         if not re.match(r"https?://(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/", url):
-            self.respond({"ok": False, "error": "Lien YouTube invalide"})
+            self.respond({"ok": False, "error": "Invalid YouTube link"})
             return
 
         try:
@@ -287,9 +287,9 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                         )
                         self.respond({"ok": True, "file": filename})
                         return
-                self.respond({"ok": True, "file": "MP3 converti"})
+                self.respond({"ok": True, "file": "MP3 converted"})
             else:
-                err = result.stderr.strip().split("\n")[-1] if result.stderr else "Erreur yt-dlp"
+                err = result.stderr.strip().split("\n")[-1] if result.stderr else "yt-dlp error"
                 self.respond({"ok": False, "error": err[:200]})
         except subprocess.TimeoutExpired:
             self.respond({"ok": False, "error": "Timeout (>3min)"})
