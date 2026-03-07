@@ -253,6 +253,56 @@ function addHistory(filename) {
 </html>"""
 
 
+def patch_avi_sps(filepath):
+    """Patch H.264 SPS in AVI to remove VUI and strip SEI for portable player compatibility."""
+    with open(filepath, "rb") as f:
+        avi = bytearray(f.read())
+
+    # Minimal SPS: baseline, level 4.1, no VUI (matches cheap player decoders)
+    new_sps = bytes.fromhex("000000016742c029da0f0964")
+    sps_prefix = bytes.fromhex("000000016742c029")
+
+    pos = 0
+    while True:
+        idx = avi.find(sps_prefix, pos)
+        if idx < 0:
+            break
+        j = idx + len(sps_prefix)
+        while j < len(avi) - 3:
+            if avi[j:j + 4] == b'\x00\x00\x00\x01' or avi[j:j + 3] == b'\x00\x00\x01':
+                break
+            j += 1
+        old_len = j - idx
+        diff = old_len - len(new_sps)
+        if diff > 4:
+            filler = b'\x00\x00\x00\x01\x0c' + b'\xff' * (diff - 5)
+        elif diff > 0:
+            filler = b'\xff' * diff
+        else:
+            filler = b''
+        avi[idx:idx + old_len] = new_sps + filler
+        pos = idx + old_len
+
+    # Strip SEI NALs (replace with filler, same size)
+    for sei_pat in [b'\x00\x00\x00\x01\x06', b'\x00\x00\x01\x06']:
+        p = 0
+        while True:
+            idx = avi.find(sei_pat, p)
+            if idx < 0:
+                break
+            j = idx + len(sei_pat)
+            while j < len(avi) - 3:
+                if avi[j:j + 4] == b'\x00\x00\x00\x01' or avi[j:j + 3] == b'\x00\x00\x01':
+                    break
+                j += 1
+            filler = sei_pat[:-1] + b'\x0c' + b'\xff' * (j - idx - len(sei_pat))
+            avi[idx:j] = filler
+            p = idx + (j - idx)
+
+    with open(filepath, "wb") as f:
+        f.write(bytes(avi))
+
+
 class YTHandler(http.server.BaseHTTPRequestHandler):
 
     download_dir = DEFAULT_DIR
@@ -387,17 +437,24 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                     self.respond({"ok": False, "error": "Download failed"})
                     return
 
-            # Step 2: convert to AVI with ffmpeg (matching device format)
+            # Step 2: convert to AVI with ffmpeg (ultra-simple H.264 for portable players)
             base_name = os.path.basename(tmp_file).rsplit("_tmp.", 1)[0]
             avi_file = os.path.join(self.download_dir, base_name + ".avi")
 
             ffmpeg_bin = FFMPEG or "ffmpeg"
             avi_cmd = [
                 ffmpeg_bin, "-y", "-i", tmp_file,
-                "-c:v", "libx264", "-profile:v", "baseline", "-level:v", "4.1",
-                "-x264-params", "bframes=0:ref=1:annexb=1",
+                "-c:v", "libx264",
+                "-profile:v", "baseline", "-level:v", "4.1",
+                "-preset", "ultrafast", "-tune", "fastdecode",
+                "-x264-params",
+                "bframes=0:ref=1:annexb=1:no-deblock=1:no-psy=1:no-mbtree=1:"
+                "aq-mode=0:chroma-qp-offset=0:partitions=none:me=dia:subme=0:"
+                "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
+                "-qp", "28", "-g", "1",
                 "-vtag", "H264",
-                "-s", "240x288", "-r", "30", "-b:v", "668k",
+                "-vf", "scale=240:288,setsar=1:1",
+                "-r", "30",
                 "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 avi_file,
             ]
@@ -410,6 +467,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
             if conv.returncode == 0 and os.path.isfile(avi_file):
+                patch_avi_sps(avi_file)
                 self.respond({"ok": True, "file": os.path.basename(avi_file)})
             else:
                 err = conv.stderr.strip().split("\n")[-1] if conv.stderr else "ffmpeg error"
