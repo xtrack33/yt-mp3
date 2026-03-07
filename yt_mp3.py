@@ -236,13 +236,20 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             return
         self.send_response(200)
         mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        filesize = os.path.getsize(filepath)
         self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(os.path.getsize(filepath)))
+        self.send_header("Content-Length", str(filesize))
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         with open(filepath, "rb") as f:
             while chunk := f.read(65536):
                 self.wfile.write(chunk)
+        # Auto-delete after download
+        try:
+            os.remove(filepath)
+            print(f"  Deleted: {filename}")
+        except OSError:
+            pass
 
     def do_POST(self):
         if self.path != "/download":
