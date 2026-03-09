@@ -195,10 +195,13 @@ HTML = """<!DOCTYPE html>
 <body>
 <div class="container">
   <h1><span>YT</span>-MP3</h1>
-  <input type="text" id="url" placeholder="Paste a YouTube link here..." autofocus>
+  <input type="text" id="url" placeholder="Paste a YouTube or TikTok link here..." autofocus>
   <div class="format-row">
     <div class="format-btn active" data-fmt="mp3" onclick="setFormat(this)">
       MP3<span class="format-label">Audio only</span>
+    </div>
+    <div class="format-btn" data-fmt="mp4" onclick="setFormat(this)">
+      Video<span class="format-label">MP4 720p</span>
     </div>
     <div class="format-btn" data-fmt="avi" onclick="setFormat(this)">
       AVI<span class="format-label">Fullscreen</span>
@@ -214,8 +217,8 @@ HTML = """<!DOCTYPE html>
     <div class="quality-btn" data-q="light" onclick="setQuality(this)">
       Light<span class="format-label">Smaller</span>
     </div>
-    <div class="quality-btn" data-q="vlight" onclick="setQuality(this)">
-      V.Light<span class="format-label">Smallest</span>
+    <div class="quality-btn" data-q="aigo" id="aigoBtn" onclick="setQuality(this)">
+      Aigo<span class="format-label">Player</span>
     </div>
   </div>
   <button class="btn-convert" id="btn" onclick="convert()">Convert</button>
@@ -239,8 +242,13 @@ function setFormat(el) {
   document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
   el.classList.add('active');
   currentFormat = el.dataset.fmt;
+  const aigoBtn = document.getElementById('aigoBtn');
   if (currentFormat === 'avi' || currentFormat === 'avi169') {
     qualityRow.classList.add('visible');
+    aigoBtn.style.display = currentFormat === 'avi169' ? '' : 'none';
+    if (currentFormat !== 'avi169' && currentQuality === 'aigo') {
+      setQuality(document.querySelector('[data-q="hq"]'));
+    }
   } else {
     qualityRow.classList.remove('visible');
   }
@@ -410,12 +418,14 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         fmt = body.get("format", "mp3")
         quality = body.get("quality", "hq")
 
-        if not re.match(r"https?://(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/", url):
-            self.respond({"ok": False, "error": "Invalid YouTube link"})
+        if not re.match(r"https?://(www\.|vm\.|vt\.)?(youtube\.com|youtu\.be|music\.youtube\.com|tiktok\.com)/", url):
+            self.respond({"ok": False, "error": "Invalid YouTube or TikTok link"})
             return
 
         if fmt in ("avi", "avi169"):
             self.convert_avi(url, letterbox=(fmt == "avi169"), quality=quality)
+        elif fmt == "mp4":
+            self.convert_mp4(url)
         else:
             self.convert_mp3(url)
 
@@ -454,6 +464,69 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.respond({"ok": False, "error": str(e)[:200]})
 
+    def convert_mp4(self, url):
+        try:
+            # Step 1: download best quality to temp file
+            tmp_template = os.path.join(self.download_dir, "%(title)s_tmp.%(ext)s")
+            cmd = [YTDLP]
+            if FFMPEG:
+                cmd += ["--ffmpeg-location", FFMPEG]
+            cmd += [
+                "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                "-o", tmp_template,
+                "--no-playlist",
+                url,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                err = result.stderr.strip().split("\n")[-1] if result.stderr else "yt-dlp error"
+                self.respond({"ok": False, "error": err[:200]})
+                return
+
+            # Find downloaded temp file
+            tmp_file = None
+            for line in result.stdout.splitlines():
+                if "[download] Destination:" in line:
+                    tmp_file = line.split("Destination: ", 1)[1].strip()
+                elif "[download] " in line and " has already been downloaded" in line:
+                    tmp_file = line.split("[download] ", 1)[1].split(" has already")[0].strip()
+                elif "[Merger] Merging formats into" in line:
+                    tmp_file = line.split("Merging formats into \"", 1)[1].rstrip('"').strip()
+            if not tmp_file or not os.path.isfile(tmp_file):
+                candidates = glob.glob(os.path.join(self.download_dir, "*_tmp.*"))
+                if candidates:
+                    tmp_file = max(candidates, key=os.path.getmtime)
+                else:
+                    self.respond({"ok": False, "error": "Download failed"})
+                    return
+
+            # Step 2: transcode to H264+AAC MP4 (QuickTime/iOS compatible)
+            base_name = os.path.basename(tmp_file).rsplit("_tmp.", 1)[0]
+            mp4_file = os.path.join(self.download_dir, base_name + ".mp4")
+            ffmpeg_bin = FFMPEG or "ffmpeg"
+            ff_cmd = [
+                ffmpeg_bin, "-y", "-i", tmp_file,
+                "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1",
+                "-preset", "fast", "-crf", "22",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                "-movflags", "+faststart",
+                mp4_file,
+            ]
+            conv = subprocess.run(ff_cmd, capture_output=True, text=True, timeout=600)
+            try:
+                os.remove(tmp_file)
+            except OSError:
+                pass
+            if conv.returncode == 0 and os.path.isfile(mp4_file):
+                self.respond({"ok": True, "file": os.path.basename(mp4_file)})
+            else:
+                err = conv.stderr.strip().split("\n")[-1] if conv.stderr else "ffmpeg error"
+                self.respond({"ok": False, "error": err[:200]})
+        except subprocess.TimeoutExpired:
+            self.respond({"ok": False, "error": "Timeout (>10min)"})
+        except Exception as e:
+            self.respond({"ok": False, "error": str(e)[:200]})
+
     def convert_avi(self, url, letterbox=False, quality="hq"):
         try:
             # Step 1: download with yt-dlp (best quality, temp file)
@@ -483,7 +556,6 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 elif "[Merger] Merging formats into" in line:
                     tmp_file = line.split("Merging formats into \"", 1)[1].rstrip('"').strip()
             if not tmp_file or not os.path.isfile(tmp_file):
-                # Fallback: find most recent _tmp file
                 candidates = glob.glob(os.path.join(self.download_dir, "*_tmp.*"))
                 if candidates:
                     tmp_file = max(candidates, key=os.path.getmtime)
@@ -491,33 +563,48 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                     self.respond({"ok": False, "error": "Download failed"})
                     return
 
-            # Step 2: convert to AVI with ffmpeg (ultra-simple H.264 for portable players)
             base_name = os.path.basename(tmp_file).rsplit("_tmp.", 1)[0]
             avi_file = os.path.join(self.download_dir, base_name + ".avi")
-
-            # Video filter: fullscreen or 16:9 letterbox
-            if letterbox:
-                vf = "scale=288:162,transpose=2,pad=240:288:(240-iw)/2:0:black,setsar=1:1"
-            else:
-                vf = "scale=288:240,transpose=2,setsar=1:1"
-
             ffmpeg_bin = FFMPEG or "ffmpeg"
-            avi_cmd = [
-                ffmpeg_bin, "-y", "-i", tmp_file,
-                "-c:v", "libx264",
-                "-profile:v", "baseline", "-level:v", "4.1",
-                "-preset", "ultrafast", "-tune", "fastdecode",
-                "-x264-params",
-                "bframes=0:ref=1:annexb=1:no-deblock=1:no-psy=1:no-mbtree=1:"
-                "aq-mode=0:chroma-qp-offset=0:partitions=none:me=dia:subme=0:"
-                "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
-                "-qp", {"hq": "28", "light": "34", "vlight": "38"}.get(quality, "28"), "-g", "1",
-                "-vtag", "H264",
-                "-vf", vf,
-                "-r", "30",
-                "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
-                avi_file,
-            ]
+
+            # Aigo player mode: AVI 16:9 letterbox + rotation + special stack
+            is_aigo = letterbox and quality == "aigo"
+
+            if is_aigo:
+                vf = "scale=288:162,transpose=2,pad=240:288:(240-iw)/2:0:black,setsar=1:1"
+                avi_cmd = [
+                    ffmpeg_bin, "-y", "-i", tmp_file,
+                    "-c:v", "libx264",
+                    "-profile:v", "baseline", "-level:v", "4.1",
+                    "-preset", "ultrafast", "-tune", "fastdecode",
+                    "-x264-params",
+                    "bframes=0:ref=1:annexb=1:no-deblock=1:no-psy=1:no-mbtree=1:"
+                    "aq-mode=0:chroma-qp-offset=0:partitions=none:me=dia:subme=0:"
+                    "trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef",
+                    "-qp", "38", "-g", "1",
+                    "-vtag", "H264",
+                    "-vf", vf,
+                    "-r", "20",
+                    "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    avi_file,
+                ]
+            else:
+                # Standard mobile-compatible encoding, no rotation
+                if letterbox:
+                    vf = "scale=1280:720,setsar=1:1"
+                else:
+                    vf = "scale=854:480,setsar=1:1"
+                crf = {"hq": "20", "light": "26"}.get(quality, "20")
+                avi_cmd = [
+                    ffmpeg_bin, "-y", "-i", tmp_file,
+                    "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1",
+                    "-preset", "fast", "-crf", crf,
+                    "-vf", vf,
+                    "-r", "30",
+                    "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                    avi_file,
+                ]
+
             conv = subprocess.run(avi_cmd, capture_output=True, text=True, timeout=600)
 
             # Clean up temp file
@@ -527,7 +614,8 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
             if conv.returncode == 0 and os.path.isfile(avi_file):
-                patch_avi_sps(avi_file)
+                if is_aigo:
+                    patch_avi_sps(avi_file)
                 self.respond({"ok": True, "file": os.path.basename(avi_file)})
             else:
                 err = conv.stderr.strip().split("\n")[-1] if conv.stderr else "ffmpeg error"
