@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT-MP3 — Audit complet</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+    --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+    --blue: #58a6ff; --purple: #bc8cff; --orange: #ffa657;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.6; }
+  .layout { display: flex; min-height: 100vh; }
+  nav { width: 220px; background: var(--bg2); border-right: 1px solid var(--border); padding: 24px 0; position: fixed; top: 0; bottom: 0; overflow-y: auto; }
+  nav .logo { padding: 0 20px 20px; font-size: 16px; font-weight: 700; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+  nav .logo span { color: var(--red); }
+  nav a { display: block; padding: 6px 20px; color: var(--muted); text-decoration: none; font-size: 13px; transition: color .15s; }
+  nav a:hover { color: var(--text); }
+  nav a.active { color: var(--blue); border-left: 2px solid var(--blue); padding-left: 18px; }
+  nav .section { padding: 12px 20px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  main { margin-left: 220px; padding: 40px; max-width: 900px; }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  h2 { font-size: 20px; font-weight: 600; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 15px; font-weight: 600; margin: 20px 0 10px; color: var(--blue); }
+  p { margin-bottom: 12px; color: var(--muted); }
+  strong { color: var(--text); }
+  code { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-family: 'SF Mono', Menlo, monospace; font-size: 12px; color: var(--orange); }
+  pre { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; }
+  pre code { background: none; border: none; padding: 0; font-size: 13px; color: var(--text); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge-green { background: rgba(63,185,80,.15); color: var(--green); }
+  .badge-red { background: rgba(248,81,73,.15); color: var(--red); }
+  .badge-yellow { background: rgba(210,153,34,.15); color: var(--yellow); }
+  .badge-blue { background: rgba(88,166,255,.15); color: var(--blue); }
+  .badge-purple { background: rgba(188,140,255,.15); color: var(--purple); }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .card-title { font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .stat { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; text-align: center; }
+  .stat .value { font-size: 28px; font-weight: 700; }
+  .stat .label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { text-align: left; padding: 8px 12px; background: var(--bg3); color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--muted); }
+  td strong { color: var(--text); }
+  tr:last-child td { border-bottom: none; }
+  .check { color: var(--green); }
+  .cross { color: var(--red); }
+  .warn { color: var(--yellow); }
+  .timeline { border-left: 2px solid var(--border); padding-left: 20px; margin: 16px 0; }
+  .timeline-item { position: relative; margin-bottom: 16px; }
+  .timeline-item::before { content: ''; position: absolute; left: -25px; top: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+  .timeline-item.solved::before { background: var(--green); }
+  .timeline-item.failed::before { background: var(--red); }
+  .meta { font-size: 12px; color: var(--muted); margin-bottom: 24px; display: flex; gap: 20px; }
+  .meta span { display: flex; align-items: center; gap: 6px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  .highlight { background: rgba(88,166,255,.08); border: 1px solid rgba(88,166,255,.2); border-radius: 8px; padding: 16px; margin: 12px 0; }
+  .warning-box { background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.2); border-radius: 8px; padding: 16px; margin: 12px 0; }
+  .danger-box { background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.2); border-radius: 8px; padding: 16px; margin: 12px 0; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <div class="logo"><span>YT</span>-MP3 Audit</div>
+  <div class="section">Général</div>
+  <a href="#overview">Vue d'ensemble</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#formats">Formats</a>
+  <div class="section">Technique</div>
+  <a href="#aigo">Aigo Player</a>
+  <a href="#encoding">Encodage</a>
+  <a href="#security">Sécurité</a>
+  <div class="section">Infra</div>
+  <a href="#deploy">Déploiement</a>
+  <a href="#history">Historique bugs</a>
+  <a href="#roadmap">Roadmap</a>
+</nav>
+<main>
+
+<h1>YT-MP3 — Audit complet</h1>
+<div class="meta">
+  <span>📅 Mars 2026</span>
+  <span>🐍 Python 3 · single-file</span>
+  <span>🔗 github.com/xtrack33/yt-mp3</span>
+  <span><span class="badge badge-green">Production</span></span>
+</div>
+
+<!-- OVERVIEW -->
+<section id="overview">
+<h2>Vue d'ensemble</h2>
+<div class="grid3">
+  <div class="stat"><div class="value" style="color:var(--blue)">660</div><div class="label">Lignes de code</div></div>
+  <div class="stat"><div class="value" style="color:var(--green)">1</div><div class="label">Fichier Python</div></div>
+  <div class="stat"><div class="value" style="color:var(--purple)">4</div><div class="label">Formats de sortie</div></div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="card-title">Description</div>
+  <p>Serveur HTTP Python minimaliste permettant de télécharger des vidéos YouTube et TikTok en MP3, MP4 ou AVI. Cas d'usage principal : conversion pour le lecteur portable <strong>Aigo</strong> (format AVI H264 all-intra, 20fps, 240p portrait).</p>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <div class="card-title">✅ Points forts</div>
+    <ul style="list-style:none; color:var(--muted)">
+      <li class="check">✓ Single-file, zéro dépendance Python</li>
+      <li class="check">✓ UI web intégrée dans le script</li>
+      <li class="check">✓ Compatibilité Aigo validée et documentée</li>
+      <li class="check">✓ Auto-delete fichiers après download</li>
+      <li class="check">✓ Protection path traversal</li>
+      <li class="check">✓ Support YouTube + TikTok</li>
+      <li class="check">✓ Déployé sur serveur DE (systemd)</li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-title">⚠️ Points d'attention</div>
+    <ul style="list-style:none; color:var(--muted)">
+      <li class="warn">⚠ Pas d'authentification (accès public sur DE)</li>
+      <li class="warn">⚠ Traitement synchrone (1 download à la fois)</li>
+      <li class="warn">⚠ Pas de queue, timeout client possible</li>
+      <li class="warn">⚠ Fichiers temporaires si crash ffmpeg</li>
+      <li class="warn">⚠ Limite 3min pour Aigo (contrainte hardware)</li>
+      <li class="warn">⚠ TikTok: warning impersonation yt-dlp</li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+<h2>Architecture</h2>
+<div class="card">
+<pre><code>yt_mp3.py (660 lignes)
+├── HTML (CSS + JS inline)         — UI web complète
+├── patch_avi_sps()                — Patch binaire SPS H264 pour Aigo
+├── YTHandler (BaseHTTPRequestHandler)
+│   ├── do_GET  → / (UI) + /files/ (download)
+│   ├── do_POST → /download (JSON API)
+│   ├── convert_mp3()              — yt-dlp → MP3 + thumbnail
+│   ├── convert_mp4()              — yt-dlp → transcode H264+AAC MP4
+│   ├── convert_avi()              — yt-dlp → ffmpeg AVI (2 modes)
+│   └── serve_file()               — streaming + auto-delete
+└── main()                         — argparse + HTTPServer</code></pre>
+</div>
+
+<h3>Stack technique</h3>
+<table>
+  <tr><th>Composant</th><th>Rôle</th><th>Version</th></tr>
+  <tr><td><strong>Python 3</strong></td><td>Runtime, HTTP server stdlib</td><td>3.x</td></tr>
+  <tr><td><strong>yt-dlp</strong></td><td>Download YouTube/TikTok</td><td>Latest</td></tr>
+  <tr><td><strong>ffmpeg / libx264</strong></td><td>Encodage vidéo</td><td>System</td></tr>
+  <tr><td><strong>Apache2</strong></td><td>Reverse proxy /yt-mp3/ (DE)</td><td>System</td></tr>
+  <tr><td><strong>systemd</strong></td><td>Service manager (DE)</td><td>System</td></tr>
+</table>
+</section>
+
+<!-- FORMATS -->
+<section id="formats">
+<h2>Formats de sortie</h2>
+<table>
+  <tr><th>Bouton UI</th><th>Codec vidéo</th><th>Codec audio</th><th>Résolution</th><th>Rotation</th><th>Usage</th></tr>
+  <tr>
+    <td><strong>MP3</strong></td>
+    <td>—</td>
+    <td>MP3 q0</td>
+    <td>—</td>
+    <td>—</td>
+    <td>Écoute, embed thumbnail</td>
+  </tr>
+  <tr>
+    <td><strong>Video MP4</strong></td>
+    <td>H264 High CRF22</td>
+    <td>AAC 128k</td>
+    <td>≤720p</td>
+    <td class="check">Non</td>
+    <td>Mobile, QuickTime, iPhone</td>
+  </tr>
+  <tr>
+    <td><strong>AVI Fullscreen</strong></td>
+    <td>H264 High CRF20/26</td>
+    <td>MP3 128k</td>
+    <td>854×480</td>
+    <td class="check">Non</td>
+    <td>Standard 480p paysage</td>
+  </tr>
+  <tr>
+    <td><strong>AVI 16:9 HQ/Light</strong></td>
+    <td>H264 High CRF20/26</td>
+    <td>MP3 128k</td>
+    <td>1280×720</td>
+    <td class="check">Non</td>
+    <td>720p paysage standard</td>
+  </tr>
+  <tr style="background: rgba(188,140,255,.05)">
+    <td><strong>AVI 16:9 Aigo</strong></td>
+    <td>H264 Baseline all-intra QP38</td>
+    <td>PCM 16kHz mono</td>
+    <td>240×288 portrait</td>
+    <td class="warn">90° CCW</td>
+    <td><strong>Lecteur Aigo uniquement</strong></td>
+  </tr>
+</table>
+</section>
+
+<!-- AIGO -->
+<section id="aigo">
+<h2>Aigo Player — Reverse Engineering</h2>
+<div class="highlight">
+  <strong>Lecteur vidéo portable chinois</strong> avec décodeur H264 hardware limité. Nécessite un encodage très spécifique pour fonctionner correctement.
+</div>
+
+<h3>Contraintes découvertes (par tests exhaustifs)</h3>
+<table>
+  <tr><th>Contrainte</th><th>Symptôme</th><th>Solution</th></tr>
+  <tr>
+    <td>Pas de P-frames supportées</td>
+    <td>Glitches verts 50%, 1fps, freeze</td>
+    <td><code>-g 1</code> (all-intra)</td>
+  </tr>
+  <tr>
+    <td>Limite ~3600 frames all-intra</td>
+    <td>Coupure exacte à 2:01 à 30fps</td>
+    <td><code>-r 20</code> → max 3:00</td>
+  </tr>
+  <tr>
+    <td>Déblocking filter</td>
+    <td>Artefacts si activé</td>
+    <td><code>no-deblock=1</code></td>
+  </tr>
+  <tr>
+    <td>SPS non standard</td>
+    <td>Freeze au démarrage</td>
+    <td><code>patch_avi_sps()</code></td>
+  </tr>
+  <tr>
+    <td>Affichage portrait (rotation)</td>
+    <td>Vidéo à 90° sur l'écran</td>
+    <td><code>transpose=2</code> dans vf</td>
+  </tr>
+  <tr>
+    <td>Résolution max</td>
+    <td>Décodage trop lent</td>
+    <td>288×240 avant rotation</td>
+  </tr>
+</table>
+
+<h3>Tests GOP effectués</h3>
+<div class="timeline">
+  <div class="timeline-item failed"><strong>-g 30</strong> — Glitches intermittents (player perd sync sans SPS fréquent)</div>
+  <div class="timeline-item failed"><strong>-g 5</strong> — Pire : 1fps + artefacts (P-frames incompatibles)</div>
+  <div class="timeline-item failed"><strong>-g 2</strong> — Très lent, glitches verts sur 50% de l'image</div>
+  <div class="timeline-item solved"><strong>-g 1</strong> — Parfait (all-intra) mais limite 2:01 à 30fps</div>
+  <div class="timeline-item solved"><strong>-g 1 + -r 20</strong> — ✅ SOLUTION FINALE : vidéo complète jusqu'à 3:00</div>
+</div>
+</section>
+
+<!-- ENCODING -->
+<section id="encoding">
+<h2>Détail encodage Aigo</h2>
+<pre><code>ffmpeg -y -i input \
+  -c:v libx264 -profile:v baseline -level:v 4.1 \
+  -preset ultrafast -tune fastdecode \
+  -x264-params "bframes=0:ref=1:annexb=1:no-deblock=1:no-psy=1:no-mbtree=1:\
+    aq-mode=0:chroma-qp-offset=0:partitions=none:me=dia:subme=0:\
+    trellis=0:weightp=0:colorprim=undef:transfer=undef:colormatrix=undef" \
+  -qp 38 -g 1 \
+  -vtag H264 \
+  -vf "scale=288:162,transpose=2,pad=240:288:(240-iw)/2:0:black,setsar=1:1" \
+  -r 20 \
+  -c:a pcm_s16le -ar 16000 -ac 1 \
+  output.avi</code></pre>
+
+<h3>patch_avi_sps()</h3>
+<div class="card">
+  <p>Fonction de patch binaire qui :</p>
+  <ul style="color:var(--muted); padding-left:16px">
+    <li>Remplace le SPS H264 par une version minimale : <code>000000016742c029da0f0964</code></li>
+    <li>Supprime les SEI NAL units (remplacées par des fillers de même taille)</li>
+    <li>Opère en-place sur le fichier AVI (scan du contenu binaire)</li>
+    <li>Uniquement appelée pour le mode Aigo (<code>is_aigo=True</code>)</li>
+  </ul>
+</div>
+
+<h3>Encodage MP4 (mobile)</h3>
+<pre><code>ffmpeg -y -i input \
+  -c:v libx264 -profile:v high -level:v 4.1 \
+  -preset fast -crf 22 \
+  -c:a aac -b:a 128k -ar 44100 -ac 2 \
+  -movflags +faststart \
+  output.mp4</code></pre>
+<p>Compatible : QuickTime, iOS, Android, navigateurs. <code>+faststart</code> permet la lecture en streaming progressif.</p>
+</section>
+
+<!-- SECURITY -->
+<section id="security">
+<h2>Sécurité</h2>
+<div class="grid2">
+  <div class="card">
+    <div class="card-title">✅ Protections en place</div>
+    <ul style="list-style:none; color:var(--muted)">
+      <li class="check">✓ Validation URL regex (YouTube/TikTok uniquement)</li>
+      <li class="check">✓ Path traversal : <code>os.path.basename()</code></li>
+      <li class="check">✓ Pas d'exec shell (subprocess liste d'args)</li>
+      <li class="check">✓ Timeouts subprocess (3-10min)</li>
+      <li class="check">✓ Bind 127.0.0.1 par défaut (local only)</li>
+      <li class="check">✓ Auto-delete fichiers après téléchargement</li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-title">⚠️ Risques résiduels</div>
+    <ul style="list-style:none; color:var(--muted)">
+      <li class="warn">⚠ Pas d'auth sur le serveur DE (accès public)</li>
+      <li class="warn">⚠ Pas de rate limiting (abus possible)</li>
+      <li class="warn">⚠ Fichiers temporaires en cas de crash</li>
+      <li class="warn">⚠ Espace disque non limité</li>
+      <li class="warn">⚠ Logs minimaux (pas d'audit trail)</li>
+    </ul>
+  </div>
+</div>
+
+<div class="danger-box">
+  <strong>⚠ Serveur DE public sans auth</strong><br>
+  <span style="color:var(--muted)">N'importe qui peut accéder à <code>http://212.227.202.68/yt-mp3/</code> et télécharger des vidéos en utilisant les ressources du serveur. Recommandation : ajouter une authentification HTTP basique via Apache ou un token dans l'API.</span>
+</div>
+</section>
+
+<!-- DEPLOY -->
+<section id="deploy">
+<h2>Déploiement</h2>
+<div class="grid2">
+  <div class="card">
+    <div class="card-title">🖥️ Local (Mac)</div>
+    <pre><code>cd ~/Downloads/yt-mp3
+python3 yt_mp3.py &</code></pre>
+    <p>Accès : <code>http://127.0.0.1:8899/</code></p>
+    <p>Redémarrage : <code>pkill -f yt_mp3.py && python3 yt_mp3.py &</code></p>
+  </div>
+  <div class="card">
+    <div class="card-title">🌐 Serveur DE (IONOS)</div>
+    <pre><code>ssh yt-mp3-de
+cd /opt/yt-mp3 && git pull
+systemctl restart yt-mp3</code></pre>
+    <p>Accès : <code>http://212.227.202.68/yt-mp3/</code></p>
+    <p>Logs : <code>journalctl -u yt-mp3 -f</code></p>
+  </div>
+</div>
+
+<h3>One-liner deploy</h3>
+<pre><code>ssh yt-mp3-de "cd /opt/yt-mp3 && git pull && systemctl restart yt-mp3"</code></pre>
+
+<h3>Structure serveur DE</h3>
+<pre><code>/opt/yt-mp3/
+├── yt_mp3.py           — Application principale
+├── downloads/          — Fichiers téléchargés (auto-deleted)
+├── install.sh          — Script d'installation
+└── uninstall.sh        — Script de désinstallation
+
+/etc/systemd/system/yt-mp3.service
+/etc/apache2/          — Reverse proxy /yt-mp3/ → :8899</code></pre>
+</section>
+
+<!-- HISTORY -->
+<section id="history">
+<h2>Historique des bugs résolus</h2>
+
+<div class="card">
+  <div class="card-title">🐛 Bug #1 — Coupure à 2:01 sur l'Aigo <span class="badge badge-green">Résolu</span></div>
+  <p><strong>Symptôme :</strong> Toutes les vidéos > 2:01 se coupaient exactement à 2:01 puis passaient à la suivante.</p>
+  <p><strong>Diagnostic :</strong> Limite hardware Aigo ~3600 frames pour H264 all-intra. À 30fps : 173s × 30 = 5190 frames &gt; 3600.</p>
+  <p><strong>Fix :</strong> <code>-r 20</code> → 173s × 20 = 3460 frames &lt; 3600 → vidéo complète.</p>
+</div>
+
+<div class="card">
+  <div class="card-title">🐛 Bug #2 — Glitches verts + 1fps avec P-frames <span class="badge badge-green">Résolu</span></div>
+  <p><strong>Symptôme :</strong> En essayant -g 2, -g 5, -g 30 pour corriger le bug #1 : image intermittente, glitches verts sur 50% de l'écran, playback à 1fps.</p>
+  <p><strong>Diagnostic :</strong> Le décodeur hardware Aigo ne supporte pas les P-frames avec notre encodage x264 (no-deblock interférait avec le décodeur hardware).</p>
+  <p><strong>Fix :</strong> Retour à <code>-g 1</code> (all-intra) + <code>-r 20</code> pour contourner la limite frames.</p>
+</div>
+
+<div class="card">
+  <div class="card-title">🐛 Bug #3 — MP4 non compatible QuickTime <span class="badge badge-green">Résolu</span></div>
+  <p><strong>Symptôme :</strong> Les MP4 YouTube téléchargés s'ouvraient dans VLC mais pas QuickTime Player.</p>
+  <p><strong>Diagnostic :</strong> yt-dlp sélectionnait AV1+Opus (YouTube Shorts). QuickTime ne supporte pas AV1.</p>
+  <p><strong>Fix :</strong> Transcode systématique via ffmpeg en H264+AAC avec <code>-movflags +faststart</code>.</p>
+</div>
+
+<div class="card">
+  <div class="card-title">🐛 Bug #4 — TikTok : Requested format not available <span class="badge badge-green">Résolu</span></div>
+  <p><strong>Symptôme :</strong> Les liens TikTok échouaient avec "Requested format is not available".</p>
+  <p><strong>Diagnostic :</strong> TikTok fournit des formats combinés (video+audio ensemble), pas de flux séparés. Le format <code>bestvideo+bestaudio</code> ne fonctionnait pas.</p>
+  <p><strong>Fix :</strong> Format <code>bestvideo[height&lt;=720]+bestaudio/best[height&lt;=720]/best</code> avec fallback.</p>
+</div>
+</section>
+
+<!-- ROADMAP -->
+<section id="roadmap">
+<h2>Roadmap & Améliorations suggérées</h2>
+
+<h3>🔴 Priorité haute</h3>
+<div class="card">
+  <table>
+    <tr><td><strong>Auth HTTP basique</strong></td><td>Protéger le serveur DE public (Apache BasicAuth ou token)</td></tr>
+    <tr><td><strong>Nettoyage fichiers _tmp</strong></td><td>Cron ou cleanup au démarrage des fichiers temporaires orphelins</td></tr>
+    <tr><td><strong>Limite disque</strong></td><td>Vérifier espace dispo avant download, rejeter si &lt; Xmo</td></tr>
+  </table>
+</div>
+
+<h3>🟡 Priorité moyenne</h3>
+<div class="card">
+  <table>
+    <tr><td><strong>Queue async</strong></td><td>Traitement asynchrone pour plusieurs downloads simultanés</td></tr>
+    <tr><td><strong>Progression</strong></td><td>Afficher la progression du download/encodage en temps réel (SSE)</td></tr>
+    <tr><td><strong>Historique persistant</strong></td><td>Stocker l'historique des downloads côté serveur</td></tr>
+    <tr><td><strong>Limite durée Aigo</strong></td><td>Avertir l'utilisateur si la vidéo > 3min avant conversion Aigo</td></tr>
+  </table>
+</div>
+
+<h3>🟢 Améliorations cosmétiques</h3>
+<div class="card">
+  <table>
+    <tr><td><strong>Dark mode adaptatif</strong></td><td>Déjà dark, mais pas de prefers-color-scheme</td></tr>
+    <tr><td><strong>Favicon</strong></td><td>Ajouter une favicon inline SVG</td></tr>
+    <tr><td><strong>Titre dynamique</strong></td><td>Afficher le titre de la vidéo pendant la conversion</td></tr>
+  </table>
+</div>
+
+<hr>
+<p style="text-align:center; color:var(--muted); font-size:12px">Audit généré le 9 mars 2026 — YT-MP3 v1.0 — github.com/xtrack33/yt-mp3</p>
+</section>
+
+</main>
+</div>
+
+<script>
+// Active nav link on scroll
+const sections = document.querySelectorAll('section[id]');
+const links = document.querySelectorAll('nav a');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => { if (window.scrollY >= s.offsetTop - 80) current = s.id; });
+  links.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+});
+</script>
+</body>
+</html>
