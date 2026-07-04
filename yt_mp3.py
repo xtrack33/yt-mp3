@@ -12,6 +12,7 @@ import argparse
 import mimetypes
 import urllib.parse
 import glob
+import threading
 
 DEFAULT_PORT = 8899
 DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
@@ -367,6 +368,35 @@ def patch_avi_sps(filepath):
 class YTHandler(http.server.BaseHTTPRequestHandler):
 
     download_dir = DEFAULT_DIR
+    # Files scheduled for deferred deletion (avoids piling up timers per file)
+    _delete_lock = threading.Lock()
+    _scheduled_delete = set()
+
+    @classmethod
+    def schedule_delete(cls, filepath, delay=600):
+        """Delete the file after `delay` seconds instead of right after the first
+        request. Mobile browsers (iOS Safari) issue several requests per download
+        (a Range probe, then the real transfer, sometimes in parallel); deleting
+        on the first one makes every later request 404. A deferred sweep lets all
+        of them succeed while still keeping the server disk clean."""
+        with cls._delete_lock:
+            if filepath in cls._scheduled_delete:
+                return
+            cls._scheduled_delete.add(filepath)
+
+        def _rm():
+            try:
+                os.remove(filepath)
+                print(f"  Deleted: {os.path.basename(filepath)}")
+            except OSError:
+                pass
+            finally:
+                with cls._delete_lock:
+                    cls._scheduled_delete.discard(filepath)
+
+        t = threading.Timer(delay, _rm)
+        t.daemon = True
+        t.start()
 
     def do_GET(self):
         if self.path == "/" or self.path == "":
@@ -387,26 +417,68 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
         if not os.path.isfile(filepath):
             self.send_error(404, "File not found")
             return
-        self.send_response(200)
-        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
         filesize = os.path.getsize(filepath)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(filesize))
+        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         # RFC 5987: ASCII fallback + UTF-8 encoded filename
         ascii_name = filename.encode("ascii", "replace").decode("ascii")
         utf8_name = urllib.parse.quote(filename)
-        self.send_header("Content-Disposition",
-                         f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_name}')
+        disposition = (f'attachment; filename="{ascii_name}"; '
+                       f"filename*=UTF-8''{utf8_name}")
+
+        # Honour HTTP Range requests: iOS Safari and media players send a Range
+        # probe before the real download and open parallel range connections.
+        # Without 206 support they misbehave or retry, which (with deletion)
+        # broke mobile downloads entirely.
+        start, end = 0, filesize - 1
+        is_range = False
+        range_header = self.headers.get("Range")
+        if range_header:
+            m = re.match(r"bytes=(\d*)-(\d*)\s*$", range_header.strip())
+            if m:
+                g1, g2 = m.group(1), m.group(2)
+                if g1 == "" and g2 != "":            # suffix range: last N bytes
+                    start = max(0, filesize - int(g2))
+                    end = filesize - 1
+                else:
+                    start = int(g1) if g1 else 0
+                    end = int(g2) if g2 else filesize - 1
+                end = min(end, filesize - 1)
+                if start > end or start >= filesize:  # unsatisfiable
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{filesize}")
+                    self.end_headers()
+                    return
+                is_range = True
+
+        length = end - start + 1
+        if is_range:
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{filesize}")
+        else:
+            self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Disposition", disposition)
         self.end_headers()
-        with open(filepath, "rb") as f:
-            while chunk := f.read(65536):
-                self.wfile.write(chunk)
-        # Auto-delete after download
+
         try:
-            os.remove(filepath)
-            print(f"  Deleted: {filename}")
-        except OSError:
-            pass
+            with open(filepath, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client aborted (common on mobile) — keep the file, a retry will come.
+            return
+
+        # Defer deletion so every request in a mobile download sequence succeeds.
+        self.schedule_delete(filepath)
 
     def do_POST(self):
         if self.path != "/download":
@@ -437,6 +509,10 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             cmd += [
                 "-x", "--audio-format", "mp3", "--audio-quality", "0",
                 "--embed-thumbnail",
+                # TikTok lists bytevc1 (H.265) formats as "best" but they are
+                # video-only despite claiming aac audio, which breaks audio
+                # extraction. Prefer H.264 formats, which carry real audio.
+                "-S", "vcodec:h264",
                 "-o", os.path.join(self.download_dir, "%(title)s.%(ext)s"),
                 "--no-playlist",
                 url,
@@ -444,7 +520,10 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
 
             if result.returncode == 0:
-                for line in result.stdout.splitlines():
+                # Split on "\n" only, not str.splitlines(): some titles contain
+                # U+2028/U+2029 (line/paragraph separators) which splitlines()
+                # treats as line breaks, truncating the parsed filename.
+                for line in result.stdout.split("\n"):
                     if "[ExtractAudio] Destination:" in line:
                         filename = os.path.basename(line.split("Destination: ", 1)[1])
                         self.respond({"ok": True, "file": filename})
@@ -473,6 +552,9 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 cmd += ["--ffmpeg-location", FFMPEG]
             cmd += [
                 "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                # Prefer H.264: TikTok's bytevc1 (H.265) formats are video-only
+                # despite claiming audio, so favour H.264 which carries audio.
+                "-S", "vcodec:h264",
                 "-o", tmp_template,
                 "--no-playlist",
                 url,
@@ -485,7 +567,8 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
 
             # Find downloaded temp file
             tmp_file = None
-            for line in result.stdout.splitlines():
+            # Split on "\n" only (see convert_mp3): titles may contain U+2028/U+2029.
+            for line in result.stdout.split("\n"):
                 if "[download] Destination:" in line:
                     tmp_file = line.split("Destination: ", 1)[1].strip()
                 elif "[download] " in line and " has already been downloaded" in line:
@@ -536,6 +619,9 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 cmd += ["--ffmpeg-location", FFMPEG]
             cmd += [
                 "-f", "best[height<=480]/best",
+                # Prefer H.264: TikTok's bytevc1 (H.265) formats are video-only
+                # despite claiming audio, so favour H.264 which carries audio.
+                "-S", "vcodec:h264",
                 "-o", tmp_template,
                 "--no-playlist",
                 url,
@@ -548,7 +634,8 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
 
             # Find the downloaded temp file
             tmp_file = None
-            for line in result.stdout.splitlines():
+            # Split on "\n" only (see convert_mp3): titles may contain U+2028/U+2029.
+            for line in result.stdout.split("\n"):
                 if "[download] Destination:" in line:
                     tmp_file = line.split("Destination: ", 1)[1].strip()
                 elif "[download] " in line and " has already been downloaded" in line:
@@ -646,7 +733,9 @@ def main():
     os.makedirs(args.dir, exist_ok=True)
     YTHandler.download_dir = os.path.abspath(args.dir)
 
-    server = http.server.HTTPServer((args.host, args.port), YTHandler)
+    # Threading server: mobile browsers open several parallel connections per
+    # download (Range requests); a single-threaded server would serialise them.
+    server = http.server.ThreadingHTTPServer((args.host, args.port), YTHandler)
     print(f"\n  YT-MP3 ready on http://{args.host}:{args.port}")
     print(f"  Download dir: {YTHandler.download_dir}\n")
     try:
