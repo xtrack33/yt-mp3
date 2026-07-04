@@ -13,6 +13,8 @@ import mimetypes
 import urllib.parse
 import glob
 import threading
+import uuid
+import time
 
 DEFAULT_PORT = 8899
 DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
@@ -263,12 +265,20 @@ function setQuality(el) {
 
 urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') convert(); });
 
+const PHASE_LABEL = {
+  starting: 'Starting',
+  download: 'Downloading',
+  encode: 'Converting',
+  remux: 'Packaging',
+  finalize: 'Finalizing'
+};
+
 async function convert() {
   const url = urlInput.value.trim();
   if (!url) return;
   status.style.display = 'block';
   status.className = 'loading';
-  status.innerHTML = '<span class="spinner"></span> Converting to ' + currentFormat.toUpperCase() + '...';
+  status.innerHTML = '<span class="spinner"></span> Starting...';
   btn.disabled = true;
   try {
     const res = await fetch('download', {
@@ -277,20 +287,57 @@ async function convert() {
       body: JSON.stringify({url, format: currentFormat, quality: currentQuality})
     });
     const data = await res.json();
-    if (data.ok) {
-      status.className = 'success';
-      status.textContent = data.file;
-      addHistory(data.file);
-      urlInput.value = '';
-    } else {
+    if (!data.ok || !data.job_id) {
       status.className = 'error';
-      status.textContent = data.error;
+      status.textContent = data.error || 'Server error';
+      btn.disabled = false;
+      return;
     }
+    await pollProgress(data.job_id);
   } catch(e) {
     status.className = 'error';
     status.textContent = 'Server connection error';
+    btn.disabled = false;
   }
-  btn.disabled = false;
+}
+
+async function pollProgress(jobId) {
+  let misses = 0;
+  while (true) {
+    await new Promise(r => setTimeout(r, 800));
+    let data;
+    try {
+      const res = await fetch('progress/' + jobId);
+      data = await res.json();
+    } catch(e) {
+      if (++misses > 15) {
+        status.className = 'error';
+        status.textContent = 'Lost connection to server';
+        btn.disabled = false;
+        return;
+      }
+      continue;
+    }
+    misses = 0;
+    if (data.done) {
+      if (data.ok) {
+        status.className = 'success';
+        status.textContent = data.file;
+        addHistory(data.file);
+        urlInput.value = '';
+      } else {
+        status.className = 'error';
+        status.textContent = data.error || 'Conversion failed';
+      }
+      btn.disabled = false;
+      return;
+    }
+    const label = PHASE_LABEL[data.phase] || 'Working';
+    const pct = (typeof data.percent === 'number') ? Math.round(data.percent) : null;
+    status.className = 'loading';
+    status.innerHTML = '<span class="spinner"></span> ' + label +
+      (pct !== null ? ' ' + pct + '%' : '...');
+  }
 }
 
 function addHistory(filename) {
@@ -371,6 +418,9 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
     # Files scheduled for deferred deletion (avoids piling up timers per file)
     _delete_lock = threading.Lock()
     _scheduled_delete = set()
+    # Conversion jobs: id -> progress state, polled by the client at /progress/<id>
+    jobs = {}
+    _jobs_lock = threading.Lock()
 
     @classmethod
     def schedule_delete(cls, filepath, delay=600):
@@ -406,8 +456,24 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(HTML.encode())
         elif self.path.startswith("/files/"):
             self.serve_file()
+        elif self.path.startswith("/progress/"):
+            self.serve_progress()
         else:
             self.send_error(404)
+
+    def serve_progress(self):
+        job_id = self.path[len("/progress/"):]
+        with YTHandler._jobs_lock:
+            state = YTHandler.jobs.get(job_id)
+            snapshot = dict(state) if state else None
+            # Drop the job once the client has seen its final state.
+            if state and state.get("done"):
+                YTHandler.jobs.pop(job_id, None)
+        if snapshot is None:
+            self.respond({"done": True, "ok": False, "error": "Job expired"})
+        else:
+            snapshot.pop("_t", None)
+            self.respond(snapshot)
 
     def serve_file(self):
         filename = urllib.parse.unquote(self.path[7:])  # strip /files/
@@ -494,16 +560,170 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             self.respond({"ok": False, "error": "Invalid YouTube or TikTok link"})
             return
 
-        if fmt in ("avi", "avi169"):
-            self.convert_avi(url, letterbox=(fmt == "avi169"), quality=quality)
-        elif fmt == "mp4":
-            self.convert_mp4(url)
-        else:
-            self.convert_mp3(url)
+        # Run the conversion in a background thread; the client polls
+        # /progress/<id> so the UI can show real download/encode percentages
+        # instead of a mute spinner.
+        job_id = uuid.uuid4().hex
+        with YTHandler._jobs_lock:
+            cutoff = time.time() - 3600
+            for jid in [j for j, s in YTHandler.jobs.items() if s.get("_t", 0) < cutoff]:
+                YTHandler.jobs.pop(jid, None)
+            YTHandler.jobs[job_id] = {"phase": "starting", "percent": 0,
+                                      "done": False, "_t": time.time()}
+        threading.Thread(target=self._run_job,
+                         args=(job_id, url, fmt, quality), daemon=True).start()
+        self.respond({"ok": True, "job_id": job_id})
 
-    def convert_mp3(self, url):
+    def _run_job(self, job_id, url, fmt, quality):
+        def prog(**kw):
+            with YTHandler._jobs_lock:
+                j = YTHandler.jobs.get(job_id)
+                if j is not None:
+                    j.update(kw)
         try:
-            cmd = [YTDLP]
+            if fmt in ("avi", "avi169"):
+                res = self.convert_avi(url, letterbox=(fmt == "avi169"),
+                                       quality=quality, progress=prog)
+            elif fmt == "mp4":
+                res = self.convert_mp4(url, progress=prog)
+            else:
+                res = self.convert_mp3(url, progress=prog)
+        except Exception as e:
+            res = {"ok": False, "error": str(e)[:200]}
+        res["done"] = True
+        res["_t"] = time.time()
+        with YTHandler._jobs_lock:
+            YTHandler.jobs[job_id] = res
+
+    # --- subprocess helpers with live progress -----------------------------
+
+    def _stream_process(self, cmd, timeout, line_cb=None):
+        """Run cmd, invoking line_cb(line) for each stdout line as it arrives.
+        A watchdog kills the process after `timeout` seconds. Returns
+        (returncode, stdout, stderr); returncode is -9 on timeout."""
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, bufsize=1)
+        done = threading.Event()
+        timed_out = {"v": False}
+
+        def _watchdog():
+            if not done.wait(timeout):
+                timed_out["v"] = True
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+        out = []
+        try:
+            for line in p.stdout:
+                out.append(line)
+                if line_cb:
+                    try:
+                        line_cb(line)
+                    except Exception:
+                        pass
+        finally:
+            p.wait()
+            done.set()
+        stderr = p.stderr.read() if p.stderr else ""
+        rc = -9 if timed_out["v"] else p.returncode
+        return rc, "".join(out), stderr
+
+    def _probe(self, path):
+        """Return (duration_seconds, video_codec, audio_codec) via ffprobe."""
+        ffprobe = "ffprobe"
+        if FFMPEG:
+            cand = os.path.join(os.path.dirname(FFMPEG), "ffprobe")
+            if os.path.isfile(cand):
+                ffprobe = cand
+        try:
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-of", "json",
+                 "-show_entries", "format=duration:stream=codec_type,codec_name",
+                 path],
+                capture_output=True, text=True, timeout=30)
+            data = json.loads(r.stdout or "{}")
+            dur = float(data.get("format", {}).get("duration", 0) or 0)
+            vcodec = acodec = None
+            for s in data.get("streams", []):
+                if s.get("codec_type") == "video" and not vcodec:
+                    vcodec = s.get("codec_name")
+                elif s.get("codec_type") == "audio" and not acodec:
+                    acodec = s.get("codec_name")
+            return dur, vcodec, acodec
+        except Exception:
+            return 0.0, None, None
+
+    def _ytdlp_cb(self, progress):
+        """Line callback parsing yt-dlp download percentage (needs --newline)."""
+        pct_re = re.compile(r"\[download\]\s+([\d.]+)%")
+
+        def cb(line):
+            m = pct_re.search(line)
+            if m:
+                progress(phase="download", percent=float(m.group(1)))
+            elif any(t in line for t in ("[ExtractAudio]", "[Merger]",
+                                         "[EmbedThumbnail]", "[ThumbnailsConvertor]",
+                                         "[VideoConvertor]")):
+                progress(phase="finalize", percent=100.0)
+        return cb
+
+    def _ffmpeg_cb(self, duration, progress, phase):
+        """Line callback parsing ffmpeg -progress pipe:1 output (out_time=)."""
+        def cb(line):
+            line = line.strip()
+            if line.startswith("out_time="):
+                t = line[len("out_time="):]
+                try:
+                    h, m, s = t.split(":")
+                    sec = int(h) * 3600 + int(m) * 60 + float(s)
+                    if duration > 0:
+                        progress(phase=phase,
+                                 percent=min(99.0, sec / duration * 100.0))
+                except Exception:
+                    pass
+            elif line == "progress=end":
+                progress(phase=phase, percent=100.0)
+        return cb
+
+    def _download_tmp(self, url, fmt_selector, progress):
+        """Download to a *_tmp file with yt-dlp; return (tmp_path, None) or
+        (None, error_message)."""
+        tmp_template = os.path.join(self.download_dir, "%(title)s_tmp.%(ext)s")
+        cmd = [YTDLP, "--newline"]
+        if FFMPEG:
+            cmd += ["--ffmpeg-location", FFMPEG]
+        cmd += ["-f", fmt_selector, "-S", "vcodec:h264",
+                "-o", tmp_template, "--no-playlist", url]
+        progress(phase="download", percent=0)
+        rc, out, err = self._stream_process(cmd, 300, self._ytdlp_cb(progress))
+        if rc != 0:
+            if rc == -9:
+                return None, "Timeout (>5min)"
+            e = err.strip().split("\n")[-1] if err.strip() else "yt-dlp error"
+            return None, e[:200]
+        tmp_file = None
+        # Split on "\n" only (see convert_mp3): titles may contain U+2028/U+2029.
+        for line in out.split("\n"):
+            if "[download] Destination:" in line:
+                tmp_file = line.split("Destination: ", 1)[1].strip()
+            elif "[download] " in line and " has already been downloaded" in line:
+                tmp_file = line.split("[download] ", 1)[1].split(" has already")[0].strip()
+            elif "[Merger] Merging formats into" in line:
+                tmp_file = line.split("Merging formats into \"", 1)[1].rstrip('"').strip()
+        if not tmp_file or not os.path.isfile(tmp_file):
+            candidates = glob.glob(os.path.join(self.download_dir, "*_tmp.*"))
+            if candidates:
+                tmp_file = max(candidates, key=os.path.getmtime)
+            else:
+                return None, "Download failed"
+        return tmp_file, None
+
+    def convert_mp3(self, url, progress):
+        try:
+            cmd = [YTDLP, "--newline"]
             if FFMPEG:
                 cmd += ["--ffmpeg-location", FFMPEG]
             cmd += [
@@ -517,142 +737,97 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                 "--no-playlist",
                 url,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-
-            if result.returncode == 0:
+            progress(phase="download", percent=0)
+            rc, out, err = self._stream_process(cmd, 300, self._ytdlp_cb(progress))
+            if rc == 0:
                 # Split on "\n" only, not str.splitlines(): some titles contain
                 # U+2028/U+2029 (line/paragraph separators) which splitlines()
                 # treats as line breaks, truncating the parsed filename.
-                for line in result.stdout.split("\n"):
+                # ExtractAudio wins: "has already been downloaded" may refer to a
+                # leftover video file of the same title, not the produced .mp3.
+                extracted = already = None
+                for line in out.split("\n"):
                     if "[ExtractAudio] Destination:" in line:
-                        filename = os.path.basename(line.split("Destination: ", 1)[1])
-                        self.respond({"ok": True, "file": filename})
-                        return
-                    if "[download] " in line and " has already been downloaded" in line:
-                        filename = os.path.basename(
-                            line.split("[download] ", 1)[1].split(" has already")[0]
-                        )
-                        self.respond({"ok": True, "file": filename})
-                        return
-                self.respond({"ok": True, "file": "MP3 converted"})
-            else:
-                err = result.stderr.strip().split("\n")[-1] if result.stderr else "yt-dlp error"
-                self.respond({"ok": False, "error": err[:200]})
-        except subprocess.TimeoutExpired:
-            self.respond({"ok": False, "error": "Timeout (>3min)"})
+                        extracted = os.path.basename(line.split("Destination: ", 1)[1])
+                    elif "[download] " in line and " has already been downloaded" in line:
+                        already = os.path.basename(
+                            line.split("[download] ", 1)[1].split(" has already")[0])
+                if extracted:
+                    return {"ok": True, "file": extracted}
+                if already and already.lower().endswith(".mp3"):
+                    return {"ok": True, "file": already}
+                mp3s = glob.glob(os.path.join(self.download_dir, "*.mp3"))
+                if mp3s:
+                    return {"ok": True,
+                            "file": os.path.basename(max(mp3s, key=os.path.getmtime))}
+                return {"ok": True, "file": "MP3 converted"}
+            if rc == -9:
+                return {"ok": False, "error": "Timeout (>5min)"}
+            e = err.strip().split("\n")[-1] if err.strip() else "yt-dlp error"
+            return {"ok": False, "error": e[:200]}
         except Exception as e:
-            self.respond({"ok": False, "error": str(e)[:200]})
+            return {"ok": False, "error": str(e)[:200]}
 
-    def convert_mp4(self, url):
+    def convert_mp4(self, url, progress):
         try:
-            # Step 1: download best quality to temp file
-            tmp_template = os.path.join(self.download_dir, "%(title)s_tmp.%(ext)s")
-            cmd = [YTDLP]
-            if FFMPEG:
-                cmd += ["--ffmpeg-location", FFMPEG]
-            cmd += [
-                "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-                # Prefer H.264: TikTok's bytevc1 (H.265) formats are video-only
-                # despite claiming audio, so favour H.264 which carries audio.
-                "-S", "vcodec:h264",
-                "-o", tmp_template,
-                "--no-playlist",
-                url,
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                err = result.stderr.strip().split("\n")[-1] if result.stderr else "yt-dlp error"
-                self.respond({"ok": False, "error": err[:200]})
-                return
+            tmp_file, err = self._download_tmp(
+                url, "bestvideo[height<=720]+bestaudio/best[height<=720]/best", progress)
+            if not tmp_file:
+                return {"ok": False, "error": err}
 
-            # Find downloaded temp file
-            tmp_file = None
-            # Split on "\n" only (see convert_mp3): titles may contain U+2028/U+2029.
-            for line in result.stdout.split("\n"):
-                if "[download] Destination:" in line:
-                    tmp_file = line.split("Destination: ", 1)[1].strip()
-                elif "[download] " in line and " has already been downloaded" in line:
-                    tmp_file = line.split("[download] ", 1)[1].split(" has already")[0].strip()
-                elif "[Merger] Merging formats into" in line:
-                    tmp_file = line.split("Merging formats into \"", 1)[1].rstrip('"').strip()
-            if not tmp_file or not os.path.isfile(tmp_file):
-                candidates = glob.glob(os.path.join(self.download_dir, "*_tmp.*"))
-                if candidates:
-                    tmp_file = max(candidates, key=os.path.getmtime)
-                else:
-                    self.respond({"ok": False, "error": "Download failed"})
-                    return
-
-            # Step 2: transcode to H264+AAC MP4 (QuickTime/iOS compatible)
             base_name = os.path.basename(tmp_file).rsplit("_tmp.", 1)[0]
             mp4_file = os.path.join(self.download_dir, base_name + ".mp4")
             ffmpeg_bin = FFMPEG or "ffmpeg"
-            ff_cmd = [
-                ffmpeg_bin, "-y", "-i", tmp_file,
-                "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1",
-                "-preset", "fast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                "-movflags", "+faststart",
-                mp4_file,
-            ]
-            conv = subprocess.run(ff_cmd, capture_output=True, text=True, timeout=600)
+            dur, vcodec, acodec = self._probe(tmp_file)
+
+            if vcodec == "h264" and acodec == "aac":
+                # Source is already QuickTime/iOS-compatible (typical for TikTok
+                # and many YouTube videos): just remux + faststart. Near-instant,
+                # no CPU-heavy re-encode — this is what made MP4 feel "infinite".
+                progress(phase="remux", percent=0)
+                ff_cmd = [ffmpeg_bin, "-nostats", "-progress", "pipe:1", "-y",
+                          "-i", tmp_file, "-c", "copy", "-movflags", "+faststart",
+                          mp4_file]
+                phase = "remux"
+            else:
+                # Needs a real transcode (VP9/AV1/HEVC source). veryfast keeps it
+                # bearable on a single core.
+                progress(phase="encode", percent=0)
+                ff_cmd = [ffmpeg_bin, "-nostats", "-progress", "pipe:1", "-y",
+                          "-i", tmp_file,
+                          "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1",
+                          "-preset", "veryfast", "-crf", "23",
+                          "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                          "-movflags", "+faststart", mp4_file]
+                phase = "encode"
+
+            rc, _, ferr = self._stream_process(
+                ff_cmd, 600, self._ffmpeg_cb(dur, progress, phase))
             try:
                 os.remove(tmp_file)
             except OSError:
                 pass
-            if conv.returncode == 0 and os.path.isfile(mp4_file):
-                self.respond({"ok": True, "file": os.path.basename(mp4_file)})
-            else:
-                err = conv.stderr.strip().split("\n")[-1] if conv.stderr else "ffmpeg error"
-                self.respond({"ok": False, "error": err[:200]})
-        except subprocess.TimeoutExpired:
-            self.respond({"ok": False, "error": "Timeout (>10min)"})
+            if rc == 0 and os.path.isfile(mp4_file):
+                return {"ok": True, "file": os.path.basename(mp4_file)}
+            if rc == -9:
+                return {"ok": False, "error": "Timeout (>10min)"}
+            e = ferr.strip().split("\n")[-1] if ferr.strip() else "ffmpeg error"
+            return {"ok": False, "error": e[:200]}
         except Exception as e:
-            self.respond({"ok": False, "error": str(e)[:200]})
+            return {"ok": False, "error": str(e)[:200]}
 
-    def convert_avi(self, url, letterbox=False, quality="hq"):
+    def convert_avi(self, url, letterbox=False, quality="hq", progress=None):
+        if progress is None:
+            progress = lambda **k: None
         try:
-            # Step 1: download with yt-dlp (best quality, temp file)
-            tmp_template = os.path.join(self.download_dir, "%(title)s_tmp.%(ext)s")
-            cmd = [YTDLP]
-            if FFMPEG:
-                cmd += ["--ffmpeg-location", FFMPEG]
-            cmd += [
-                "-f", "best[height<=480]/best",
-                # Prefer H.264: TikTok's bytevc1 (H.265) formats are video-only
-                # despite claiming audio, so favour H.264 which carries audio.
-                "-S", "vcodec:h264",
-                "-o", tmp_template,
-                "--no-playlist",
-                url,
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                err = result.stderr.strip().split("\n")[-1] if result.stderr else "yt-dlp error"
-                self.respond({"ok": False, "error": err[:200]})
-                return
-
-            # Find the downloaded temp file
-            tmp_file = None
-            # Split on "\n" only (see convert_mp3): titles may contain U+2028/U+2029.
-            for line in result.stdout.split("\n"):
-                if "[download] Destination:" in line:
-                    tmp_file = line.split("Destination: ", 1)[1].strip()
-                elif "[download] " in line and " has already been downloaded" in line:
-                    tmp_file = line.split("[download] ", 1)[1].split(" has already")[0].strip()
-                elif "[Merger] Merging formats into" in line:
-                    tmp_file = line.split("Merging formats into \"", 1)[1].rstrip('"').strip()
-            if not tmp_file or not os.path.isfile(tmp_file):
-                candidates = glob.glob(os.path.join(self.download_dir, "*_tmp.*"))
-                if candidates:
-                    tmp_file = max(candidates, key=os.path.getmtime)
-                else:
-                    self.respond({"ok": False, "error": "Download failed"})
-                    return
+            tmp_file, err = self._download_tmp(url, "best[height<=480]/best", progress)
+            if not tmp_file:
+                return {"ok": False, "error": err}
 
             base_name = os.path.basename(tmp_file).rsplit("_tmp.", 1)[0]
             avi_file = os.path.join(self.download_dir, base_name + ".avi")
             ffmpeg_bin = FFMPEG or "ffmpeg"
+            dur, _, _ = self._probe(tmp_file)
 
             # Aigo player mode: AVI 16:9 letterbox + rotation + special stack
             is_aigo = letterbox and quality == "aigo"
@@ -692,7 +867,11 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
                     avi_file,
                 ]
 
-            conv = subprocess.run(avi_cmd, capture_output=True, text=True, timeout=600)
+            # Inject live progress reporting (writes to stdout / pipe:1).
+            avi_cmd = avi_cmd[:1] + ["-nostats", "-progress", "pipe:1"] + avi_cmd[1:]
+            progress(phase="encode", percent=0)
+            rc, _, ferr = self._stream_process(
+                avi_cmd, 600, self._ffmpeg_cb(dur, progress, "encode"))
 
             # Clean up temp file
             try:
@@ -700,18 +879,16 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-            if conv.returncode == 0 and os.path.isfile(avi_file):
+            if rc == 0 and os.path.isfile(avi_file):
                 if is_aigo:
                     patch_avi_sps(avi_file)
-                self.respond({"ok": True, "file": os.path.basename(avi_file)})
-            else:
-                err = conv.stderr.strip().split("\n")[-1] if conv.stderr else "ffmpeg error"
-                self.respond({"ok": False, "error": err[:200]})
-
-        except subprocess.TimeoutExpired:
-            self.respond({"ok": False, "error": "Timeout (>10min)"})
+                return {"ok": True, "file": os.path.basename(avi_file)}
+            if rc == -9:
+                return {"ok": False, "error": "Timeout (>10min)"}
+            e = ferr.strip().split("\n")[-1] if ferr.strip() else "ffmpeg error"
+            return {"ok": False, "error": e[:200]}
         except Exception as e:
-            self.respond({"ok": False, "error": str(e)[:200]})
+            return {"ok": False, "error": str(e)[:200]}
 
     def respond(self, data):
         self.send_response(200)
