@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""YT-MP3 — Minimal web server to download YouTube videos as MP3 or AVI via yt-dlp."""
+"""YT-TIKTOK-MP3 — Minimal web server to download YouTube/TikTok videos as MP4, MP3 or AVI via yt-dlp."""
 
 import http.server
 import json
@@ -29,7 +29,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>YT-MP3</title>
+<title>YT-TIKTOK-MP3</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -197,7 +197,7 @@ HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="container">
-  <h1><span>YT</span>-MP3</h1>
+  <h1><span>YT</span>-TIKTOK-MP3</h1>
   <input type="text" id="url" placeholder="Paste a YouTube or TikTok link here..." autofocus>
   <div class="format-row">
     <div class="format-btn active" data-fmt="mp4" onclick="setFormat(this)">
@@ -901,7 +901,7 @@ class YTHandler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="YT-MP3 — YouTube to MP3/AVI downloader")
+    parser = argparse.ArgumentParser(description="YT-TIKTOK-MP3 — YouTube/TikTok to MP4/MP3/AVI downloader")
     parser.add_argument("-p", "--port", type=int, default=int(os.environ.get("YTMP3_PORT", DEFAULT_PORT)))
     parser.add_argument("-d", "--dir", default=os.environ.get("YTMP3_DIR", DEFAULT_DIR))
     parser.add_argument("--host", default=os.environ.get("YTMP3_HOST", "127.0.0.1"))
@@ -913,7 +913,7 @@ def main():
     # Threading server: mobile browsers open several parallel connections per
     # download (Range requests); a single-threaded server would serialise them.
     server = http.server.ThreadingHTTPServer((args.host, args.port), YTHandler)
-    print(f"\n  YT-MP3 ready on http://{args.host}:{args.port}")
+    print(f"\n  YT-TIKTOK-MP3 ready on http://{args.host}:{args.port}")
     print(f"  Download dir: {YTHandler.download_dir}\n")
     try:
         server.serve_forever()
