@@ -200,11 +200,11 @@ HTML = """<!DOCTYPE html>
   <h1><span>YT</span>-MP3</h1>
   <input type="text" id="url" placeholder="Paste a YouTube or TikTok link here..." autofocus>
   <div class="format-row">
-    <div class="format-btn active" data-fmt="mp3" onclick="setFormat(this)">
-      MP3<span class="format-label">Audio only</span>
+    <div class="format-btn active" data-fmt="mp4" onclick="setFormat(this)">
+      Video<span class="format-label">MP4</span>
     </div>
-    <div class="format-btn" data-fmt="mp4" onclick="setFormat(this)">
-      Video<span class="format-label">MP4 720p</span>
+    <div class="format-btn" data-fmt="mp3" onclick="setFormat(this)">
+      MP3<span class="format-label">Audio only</span>
     </div>
     <div class="format-btn" data-fmt="avi" onclick="setFormat(this)">
       AVI<span class="format-label">Fullscreen</span>
@@ -237,7 +237,7 @@ const btn = document.getElementById('btn');
 const urlInput = document.getElementById('url');
 const historyBox = document.getElementById('historyBox');
 const historyList = document.getElementById('historyList');
-let currentFormat = 'mp3';
+let currentFormat = 'mp4';
 let currentQuality = 'hq';
 const qualityRow = document.getElementById('qualityRow');
 
